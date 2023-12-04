@@ -13,9 +13,11 @@ from nltk.translate.bleu_score import corpus_bleu
 import random
 from copy import deepcopy
 from tqdm.auto import trange
+import gc
+import matplotlib.pyplot as plt
 
 def get_batch_pairs(batch_size, data, titles=[('영어', 'en_Latn'), ('한국어', 'kor_Hang')]):
-    (l1, long1), (l2, long2) = random.sample(titles, 2)
+    (l1, long1), (l2, long2) = random.sample(titles, 2) # randomly choose translation direction
     x, y = [], []
     for _ in range(batch_size):
         item = data.iloc[random.randint(0, len(data)-1)]
@@ -23,13 +25,18 @@ def get_batch_pairs(batch_size, data, titles=[('영어', 'en_Latn'), ('한국어
         y.append(item[l2])
     return x, y, long1, long2
 
+def clear_mem():
+  gc.collect()
+  torch.cuda.empty_cache()
+  
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--batch_size', default=256, type=int,
                     help='batch training size')
     ap.add_argument('--max_length', default=60, type=int,
                     help='max sentence length')
-    ap.add_argument('--n_iters', default=10000, type=int,
+    ap.add_argument('--n_iters', default=5000, type=int,
                     help='total number of examples to train on')
     ap.add_argument('--print_every', default=500, type=int,
                     help='print loss info every this many training examples')
@@ -54,6 +61,7 @@ def main():
 
     args = ap.parse_args()
 
+
     train_df = pd.read_csv(args.train_path, sep=',')
     val_test_df = pd.read_csv(args.val_path, sep=',')
     val_df, test_df = val_test_df[:len(val_test_df)//2], val_test_df[len(val_test_df)//2:]
@@ -65,35 +73,35 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(name)
         nllb = AutoModelForSeq2SeqLM.from_pretrained(name)
     
-    tokenizer.src_lang = "kor_Hang"
-    inputs = tokenizer(text="다만 하반기에도 이같은 기조가 이어질 지에 대해서는 의견이 분분하다.", return_tensors="pt")
-    translated_tokens = nllb.generate(
-        **inputs, forced_bos_token_id=tokenizer.lang_code_to_id["eng_Latn"]
-    )
+    # tokenizer.src_lang = "kor_Hang"
+    # inputs = tokenizer(text="다만 하반기에도 이같은 기조가 이어질 지에 대해서는 의견이 분분하다.", return_tensors="pt")
+    # translated_tokens = nllb.generate(
+    #     **inputs, forced_bos_token_id=tokenizer.lang_code_to_id["eng_Latn"]
+    # )
 
-    batch_size = 16
-    test_df_small = test_df[:1000]
-    #batches = [test_df.iloc[i:i + batch_size] for i in range(0, len(test_df), batch_size)]
-    batches = [test_df_small.iloc[i:i + batch_size] for i in range(0, len(test_df_small), batch_size)]
+    def test_translations(model, data, batch_size=25):
+      batch_size = 50
+      test_df_small = data[:1000]
+      batches = [test_df_small.iloc[i:i + batch_size] for i in range(0, len(test_df_small), batch_size)]
 
-    # test original
-    english_translations = []
-    for df_batch in tqdm(batches):
-        inputs = tokenizer(text=df_batch['한국어'].tolist(), return_tensors="pt", padding=True, truncation=True)
-        translated_tokens = nllb.generate(
-            **inputs, forced_bos_token_id=tokenizer.lang_code_to_id["eng_Latn"]
-        )
-        translated_sentences = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)
-        #print(translated_sentences)
-        english_translations += translated_sentences
-    english_translations_split = [t.split() for t in english_translations]
-    english_sentences = test_df['영어'].tolist()[:1000]
-    english_sentences_split = [[s.split()] for s in english_sentences]
-    logging.info('Original model BLEU score: %.3f', corpus_bleu(english_sentences_split, english_translations_split))
+      english_translations = []
+      for df_batch in tqdm(batches):
+          inputs = tokenizer(text=df_batch['한국어'].tolist(), return_tensors="pt", padding=True, truncation=True)
+          translated_tokens = model.generate(
+              **inputs, forced_bos_token_id=tokenizer.lang_code_to_id["eng_Latn"]
+          )
+          translated_sentences = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)
+          english_translations += translated_sentences
+      english_translations_split = [t.split() for t in english_translations]
+      english_sentences = test_df['영어'].tolist()[:1000]
+      english_sentences_split = [[s.split()] for s in english_sentences]
+      bleu_score = corpus_bleu(english_sentences_split, english_translations_split)
+      print('Model BLEU score: %.3f', bleu_score)
+      return bleu_score
 
     from transformers.optimization import Adafactor
     from transformers import get_constant_schedule_with_warmup
-    #nllb.cuda();
+
     optimizer = Adafactor(
         [p for p in nllb.parameters() if p.requires_grad],
         scale_parameter=False,
@@ -107,14 +115,16 @@ def main():
     data_train = train_df.copy()
     data_train = data_train.filter(['한국어', '영어'], axis=1)
 
+    batch_size = 50
     losses = []
+    bleu_scores = []
     nllb_new = deepcopy(nllb)
     nllb_new.train()
     x, y, loss = None, None, None
 
     tq = trange(len(losses), args.n_iters)
     for i in tq:
-        x, y, lang1, lang2 = get_batch_pairs(batch_size)
+        x, y, lang1, lang2 = get_batch_pairs(batch_size, data_train)
         try:
             tokenizer.src_lang = lang1
             x = tokenizer(x, return_tensors='pt', padding=True, truncation=True, max_length=args.max_length).to(nllb_new.device)
@@ -133,17 +143,30 @@ def main():
         except: 
             optimizer.zero_grad(set_to_none=True)
             x, y, loss = None, None, None
-            print('exception')
+            clear_mem()
             continue
 
-        if i % 1000 == 0:
+        if i % args.checkpoint_every == 0:
             print(i, np.mean(losses[-1000:]))
+            score = test_translations(nllb_new, val_df)
+            bleu_scores.append(score)
 
-        if i % 1000 == 0 and i > 0:
+        if i % args.checkpoint_every == 0 and i > 0:
             nllb_new.save_pretrained(args.save_path)
             tokenizer.save_pretrained(args.save_path)
-
-
+    test_translations(nllb_new, test_df)
+    
+    plt.plot(losses)
+    plt.xlabel("Iterations")
+    plt.ylabel("Loss")
+    plt.show()
+    plt.savefig('train_loss.png')
+    
+    plt.plot(bleu_scores)
+    plt.xlabel("10k Iterations")
+    plt.ylabel("Bleu Score on Test")
+    plt.show()
+    plt.savefig('bleu_score.png')
 
 if __name__ == '__main__':
     main()
