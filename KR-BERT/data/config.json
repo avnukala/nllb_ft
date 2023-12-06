@@ -1,5 +1,0 @@
-{
-    "train": "data/train.txt",
-    "validation": "data/validation.txt",
-    "test": "data/test.txt"
-}

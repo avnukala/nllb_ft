@@ -1,6 +1,6 @@
 import argparse
 import random
-from transformers import AutoTokenizer, AutoModel, AutoModelForSeq2SeqLM, NllbTokenizerFast, get_constant_schedule_with_warmup
+from transformers import AutoModel, AutoModelForSeq2SeqLM, NllbTokenizerFast, get_constant_schedule_with_warmup
 from transformers.optimization import Adafactor
 import torch
 import numpy as np
@@ -102,7 +102,7 @@ def main():
 
 
     def test_translations(model, data, batch_size=25, num_beams=2, small=False):
-        test_df = data[:1000] if small is True else data
+        test_df = data[:500] if small is True else data
         batches = [test_df.iloc[i:i + batch_size] for i in range(0, len(test_df), batch_size)]
         print(f'testing {len(batches)} batches of size {batch_size}')
         english_translations = []
@@ -119,7 +119,7 @@ def main():
             translated_sentences = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)
             english_translations += translated_sentences
         english_translations_split = [t.split() for t in english_translations]
-        english_sentences = test_df['영어'].tolist()[:1000] if small is True else test_df['영어']
+        english_sentences = test_df['영어'].tolist()[:500] if small is True else test_df['영어']
         english_sentences_split = [[s.split()] for s in english_sentences]
         bleu_score = corpus_bleu(english_sentences_split, english_translations_split)
         print('Model BLEU score: %.3f', bleu_score)
@@ -183,9 +183,9 @@ def main():
 
         if i % args.plot_every == 0:
             print(f'iteration: {i} mean loss: {np.mean(losses[-args.plot_every:])}')
-            # score = test_translations(nllb_new, val_df, small=args.test_small)
-            # print(f'current bleu score is: {score}')
-            # bleu_scores.append(score)
+            score = test_translations(nllb_new, val_df, small=True)
+            print(f'current bleu score is: {score}')
+            bleu_scores.append(score)
             plot_loss_and_bleu(losses, bleu_scores, i, args.plot_save_path)
 
         if i % args.checkpoint_every == 0 and i > 0:
