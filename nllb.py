@@ -85,6 +85,9 @@ def main():
     
 
     args = ap.parse_args()
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     train_df = pd.read_csv(args.train_path, sep=',')
     train_df = sort_dataset_by_size(train_df)
