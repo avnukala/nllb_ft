@@ -32,9 +32,9 @@ def clear_mem():
   
 def plot_loss_and_bleu(losses, bleu_scores, iters, save_path):
   plt.plot(losses)
-  plt.xlabel("Iterations")
+  plt.xlabel("Iterations (1000)")
   plt.ylabel("Loss")
-  plt.title(str(iters)+" Iterations")
+  plt.title(str(iters)+" Iterations (1000)")
   plt.show()
   plt.savefig(save_path+'/train_loss.png')
   
@@ -52,9 +52,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--batch_size', default=256, type=int,
                     help='batch training size')
-    ap.add_argument('--max_length', default=60, type=int,
+    ap.add_argument('--max_length', default=100, type=int,
                     help='max sentence length')
-    ap.add_argument('--n_iters', default=5000, type=int,
+    ap.add_argument('--n_iters', default=25000, type=int,
                     help='total number of examples to train on')
     ap.add_argument('--print_every', default=500, type=int,
                     help='print loss info every this many training examples')
@@ -80,6 +80,8 @@ def main():
                     help='curriculum learning (process data by size)')
     ap.add_argument('--lr', default=1e-4,
                     help='learning rate')
+    ap.add_argument('--test_small', '-ts', action='store_true',
+                    help='test bleu score on a smaller set')
     
 
     args = ap.parse_args()
@@ -98,6 +100,36 @@ def main():
         tokenizer = NllbTokenizerFast.from_pretrained(name)
         nllb = AutoModelForSeq2SeqLM.from_pretrained(name)
 
+
+    def test_translations(model, data, batch_size=25, num_beams=4, small=False):
+        test_df = data[:1000] if small is True else data
+        batches = [test_df.iloc[i:i + batch_size] for i in range(0, len(test_df), batch_size)]
+        print(f'testing {len(batches)} batches of size {batch_size}')
+        english_translations = []
+        for df_batch in tqdm(batches):
+            tokenizer.src_lang = 'kor_Hang'
+            tokenizer.tgt_lang = 'eng_Latn'
+            inputs = tokenizer(text=df_batch['한국어'].tolist(), return_tensors="pt", padding=True, truncation=True)
+            model.eval()
+            translated_tokens = model.generate(
+                **inputs.to(model.device), 
+                forced_bos_token_id=tokenizer.lang_code_to_id["eng_Latn"],
+                num_beams=num_beams,
+            )
+            translated_sentences = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)
+            english_translations += translated_sentences
+        english_translations_split = [t.split() for t in english_translations]
+        english_sentences = test_df['영어'].tolist()[:1000] if small is true else test_df['영어']
+        english_sentences_split = [[s.split()] for s in english_sentences]
+        bleu_score = corpus_bleu(english_sentences_split, english_translations_split)
+        print('Model BLEU score: %.3f', bleu_score)
+        
+        with open(args.out_file, 'w') as of:
+            for e in english_translations:
+                of.write(e)
+        
+        return bleu_score
+        
     def test_translations(model, data, batch_size=25, num_beams=4, small=False):
         if small:
             data = data[:len(data)//10]
@@ -122,9 +154,6 @@ def main():
         bleu_score = corpus_bleu(english_gt_split, english_translations_split)
         print('Model BLEU score: %.3f', bleu_score)
 
-        with open(args.out_file, 'w') as of:
-            for e in english_translations:
-                of.write(e)
 
         return bleu_score
 
@@ -181,7 +210,7 @@ def main():
 
         if i % args.plot_every == 0:
             print(f'iteration: {i} mean loss: {np.mean(losses[-args.plot_every:])}')
-            score = test_translations(nllb_new, val_df)
+            score = test_translations(nllb_new, val_df, small=args.test_small)
             print(f'current bleu score is: {score}')
             bleu_scores.append(score)
             plot_loss_and_bleu(losses, bleu_scores, i)
